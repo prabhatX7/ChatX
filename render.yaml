@@ -1,0 +1,30 @@
+# Render "Blueprint": create a new Blueprint from your GitHub repo and Render reads this file.
+# Steps and explanations: DEPLOY.md
+services:
+  - type: web
+    name: chatx
+    runtime: node
+    plan: free # free sleeps after 15 min idle and loses uploaded files on restart. See DEPLOY.md, "Where uploads live".
+    buildCommand: npm --prefix server install && npm --prefix client install --include=dev && npm run build
+    startCommand: npm --prefix server start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MONGO_URI # your MongoDB Atlas connection string (including the database name /chatx)
+        sync: false
+      - key: ADMIN_EMAIL # the email you will log in with as admin
+        sync: false
+      - key: ADMIN_SETUP_CODE # a secret only you know (8+ characters), used once to create the admin account
+        sync: false
+      - key: TRUST_PROXY
+        value: "1" # use 2 if you put Cloudflare in front
+    # With a paid plan, keep uploaded files across restarts: uncomment this and set UPLOAD_DIR=/var/data/uploads
+    # disk:
+    #   name: chatx-uploads
+    #   mountPath: /var/data
+    #   sizeGB: 5
