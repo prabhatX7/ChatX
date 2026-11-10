@@ -64,6 +64,11 @@ const userSchema = new Schema(
     // 'purple' or 'blue' (both a little neon). Chosen in a popup after the first sign-up / log-in, changeable in Settings.
     theme: { type: String, enum: ['purple', 'blue'], default: 'purple' },
     themeChosen: { type: Boolean, default: false }, // false until they answer the colour popup
+    // Browser push subscriptions (one per device / installed app) so pop-ups arrive when ChatX is closed.
+    pushSubs: {
+      type: [new Schema({ endpoint: { type: String, maxlength: 1000 }, p256dh: { type: String, maxlength: 200 }, auth: { type: String, maxlength: 100 }, addedAt: { type: Date, default: Date.now } }, { _id: false })],
+      default: [],
+    },
     pinnedChats: { type: [Schema.Types.ObjectId], default: [] }, // friends this user pinned to the top of their list
     messages: { type: [messageSchema], default: [] },
   },

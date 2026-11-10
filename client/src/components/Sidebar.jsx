@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { askPermission, notificationPermission } from '../notify.js';
+import { notificationPermission } from '../notify.js';
+import { enablePush } from '../push.js';
 import { ActivityLabel } from './Ticks.jsx';
 import Logo from './Logo.jsx';
 
@@ -136,8 +137,12 @@ export default function Sidebar({
       )}
 
       {perm === 'default' && (
-        <button className="btn wide perm-note" onClick={async () => setPerm(await askPermission())}>
-          🔔 Turn on pop-ups
+        <button className="btn wide perm-note" onClick={async () => {
+            await enablePush();
+            setPerm(notificationPermission());
+          }}
+        >
+          🔔 Turn on notifications
         </button>
       )}
       {perm === 'denied' && (

@@ -6,7 +6,10 @@ import '@fontsource/jetbrains-mono/700.css';
 import App from './App.jsx';
 import { applyTheme, getSavedTheme } from './theme.js';
 import './index.css';
+import { registerServiceWorker } from './push.js';
 
 applyTheme(getSavedTheme()); // before the first paint, so there is no flash of the wrong look
 
 createRoot(document.getElementById('root')).render(<App />);
+
+registerServiceWorker();

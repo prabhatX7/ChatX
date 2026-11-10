@@ -8,6 +8,7 @@ import { normalizeTheme } from '../services/theme.js';
 import { config } from '../config.js';
 import { requireAuth, signToken, wrap } from '../middleware/auth.js';
 import { normalizeCode } from '../services/codes.js';
+import { notifyAdmin } from '../services/push.js';
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const HEX64 = /^[a-f0-9]{64}$/;
@@ -112,6 +113,7 @@ export default function authRouter(io) {
 
       // No token: a pending person cannot use the app. Only the admin hears about the request.
       io.to('admins').emit('signup:pending', { id: String(user._id), name: user.name });
+      notifyAdmin(io, { t: 'admin', what: 'signup', name: user.name });
       res.status(201).json({ pending: true });
     })
   );

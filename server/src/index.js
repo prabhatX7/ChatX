@@ -15,6 +15,8 @@ import filesRouter from './routes/files.js';
 import adminRouter from './routes/admin.js';
 import callsRouter from './routes/calls.js';
 import guestRouter from './routes/guest.js';
+import pushRouter from './routes/push.js';
+import { initPush } from './services/push.js';
 import { bootstrap } from './services/bootstrap.js';
 
 fs.mkdirSync(config.uploadDir, { recursive: true });
@@ -63,12 +65,18 @@ app.use('/api/guest', guestRouter(io)); // has its own, separate rate limits
 app.use('/api/users', usersRouter(io));
 app.use('/api/admin', adminRouter(io));
 app.use('/api/calls', callsRouter);
+app.use('/api/push', pushRouter());
 app.use('/api/messages', messagesRouter(io));
 app.use('/api/files', filesRouter);
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 // In production the built React app is served by this same server.
 if (fs.existsSync(config.clientDist)) {
+  // The service worker must always be fetched fresh, or a new version would never reach installed apps.
+  app.get('/sw.js', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.type('application/javascript').sendFile(path.join(config.clientDist, 'sw.js'));
+  });
   app.use(express.static(config.clientDist));
   app.use((req, res) => res.sendFile(path.join(config.clientDist, 'index.html')));
 }
@@ -96,6 +104,8 @@ try {
   console.error('Start-up check failed:', err);
   process.exit(1);
 }
+
+await initPush();
 
 server.listen(config.port, () => {
   console.log(`ChatX server listening on http://localhost:${config.port}`);

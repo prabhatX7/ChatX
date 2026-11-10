@@ -50,7 +50,8 @@ export default function ChatWindow({
   const iAmGuest = me.role === 'guest';
   const imagesOnly = iAmGuest || peer.role === 'guest';
   const callsAllowed = !imagesOnly && !peer.blocked;
-  const canStartCall = callsAllowed && online && !inCall;
+  // Someone who is offline can still be rung if they have notifications on (the server says if they cannot be reached).
+  const canStartCall = callsAllowed && !inCall;
   const limitMB = imagesOnly ? 10 : MAX_FILE_MB; // keep the 10 in sync with GUEST_MAX_MB on the server
 
   // Start (or restart) a reply to a message, and put the cursor in the box so you can just type.
@@ -263,7 +264,7 @@ export default function ChatWindow({
             <button
               className="icon-btn call-start"
               aria-label={`Audio call ${peer.name}`}
-              title={inCall ? 'You are already in a call' : online ? 'Audio call' : `${peer.name} is offline`}
+              title={inCall ? 'You are already in a call' : online ? 'Audio call' : `Audio call (${peer.name} is offline: rings if they have notifications on)`}
               disabled={!canStartCall}
               onClick={() => onCall(false)}
             >
@@ -272,7 +273,7 @@ export default function ChatWindow({
             <button
               className="icon-btn call-start"
               aria-label={`Video call ${peer.name}`}
-              title={inCall ? 'You are already in a call' : online ? 'Video call' : `${peer.name} is offline`}
+              title={inCall ? 'You are already in a call' : online ? 'Video call' : `Video call (${peer.name} is offline: rings if they have notifications on)`}
               disabled={!canStartCall}
               onClick={() => onCall(true)}
             >

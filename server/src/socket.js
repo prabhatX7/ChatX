@@ -4,11 +4,20 @@ import { verifyTokenFull } from './middleware/auth.js';
 import { markDelivered } from './services/receipts.js';
 import { canChat, isAdmin, groupIdsOf } from './services/access.js';
 import { cleanSignal } from './services/calls.js';
+import { RingBook } from './services/ringing.js';
+import { sendPush, hasPushDevice } from './services/push.js';
+import { mayChat } from './services/pairs.js';
 import User from './models/User.js';
 import RequestedUser from './models/RequestedUser.js';
 
 const OID = /^[a-f0-9]{24}$/;
 const ACTIVITY = new Set(['typing', 'speaking']);
+
+// The name shown in a push (the server knows names; it never knows message text).
+async function modelName(id) {
+  const a = await User.findById(id, 'name').lean();
+  return a?.name || 'Someone';
+}
 
 export function createSocket(httpServer) {
   const io = new Server(httpServer, {
@@ -19,6 +28,17 @@ export function createSocket(httpServer) {
   // userId -> { count, role, group, groups }. Role and groups are kept so we can decide who may see whom.
   const online = new Map();
   io.isOnline = (userId) => (online.get(String(userId))?.count || 0) > 0;
+
+  // Is someone looking at ChatX right now (a tab or app in front, with focus)? If not, they get a push notification.
+  // Each open tab reports this itself ('visible' event).
+  io.isVisible = (userId) => {
+    const room = io.sockets.adapter.rooms.get(`user:${userId}`);
+    if (!room) return false;
+    for (const sid of room) if (io.sockets.sockets.get(sid)?.visible) return true;
+    return false;
+  };
+
+  const ringing = new RingBook();
 
   // Rooms: user:<id> (one person, all their tabs), group:<id> (members of a group), admins (the admin).
   io.use(async (socket, next) => {
@@ -92,31 +112,84 @@ export function createSocket(httpServer) {
     // Call signalling (invite / accept / reject / busy / end and the WebRTC offer, answer, ICE). Never stored.
     let callBudget = 150;
     const callRefill = setInterval(() => (callBudget = 150), 5000);
-    socket.on('call:signal', (raw) => {
+    // Tabs tell us when they are in front. Also tells us the page is ready, so a call that was ringing while the app
+    // was closed can be handed over now.
+    socket.visible = false;
+    socket.on('visible', (v) => {
+      socket.visible = v === true;
+    });
+    socket.on('ready', () => {
+      for (const inv of ringing.takeUndelivered(id)) {
+        socket.emit('call:signal', { from: inv.from, type: 'invite', callId: inv.callId, video: inv.video, data: null });
+      }
+    });
+
+    socket.on('call:signal', async (raw) => {
       if (callBudget-- <= 0) return;
       const p = cleanSignal(raw);
       if (!p || p.to === id) return;
+      try {
+        await relayCall(p);
+      } catch (err) {
+        console.error('call signal failed:', err.message);
+      }
+    });
+
+    async function relayCall(p) {
       const target = online.get(p.to);
       // Visitors (message requests) can never call or be called.
       const noCalls = meta.role === 'guest' || target?.role === 'guest';
-      if (!target || noCalls || !canChat(meta, { ...target, _id: p.to })) {
+      const reachable = target && !noCalls && canChat(meta, { ...target, _id: p.to });
+
+      // Someone with ChatX closed can still be rung if they have notifications on: they get a push, and the invite
+      // waits for them for as long as it rings.
+      let rousable = false;
+      if (p.type === 'invite' && !target && meta.role !== 'guest') {
+        rousable = (await mayChat(id, p.to)) && (await hasPushDevice(p.to));
+      }
+
+      if (!reachable && !rousable) {
         // Not reachable (offline, not allowed or blocked). Only an invite needs an answer.
         if (p.type === 'invite') socket.emit('call:signal', { from: p.to, type: 'unavailable', callId: p.callId });
+        // A cancel for someone who was only rung by push: take the ring back and tell them they missed it.
+        if (p.type === 'end') cancelRing(p);
         return;
       }
-      io.to(`user:${p.to}`).emit('call:signal', {
-        from: id,
-        type: p.type,
-        callId: p.callId,
-        video: p.video,
-        data: p.data,
-        ...(p.who ? { who: p.who } : {}),
-      });
+
+      if (p.type === 'invite') {
+        ringing.add(p.to, id, p.callId, p.video, Boolean(target));
+        if (!io.isVisible(p.to)) {
+          modelName(id).then((name) => sendPush(p.to, { t: 'call', from: id, name, callId: p.callId, video: p.video }, { ttl: 45, urgency: 'high' })).catch(() => {});
+        }
+      } else if (p.type === 'end') {
+        cancelRing(p);
+      }
+
+      if (reachable) {
+        io.to(`user:${p.to}`).emit('call:signal', {
+          from: id,
+          type: p.type,
+          callId: p.callId,
+          video: p.video,
+          data: p.data,
+          ...(p.who ? { who: p.who } : {}),
+        });
+      }
+      // Whoever answers ends the ring (so a later open of the app does not ring again).
+      if (p.type === 'accept' || p.type === 'reject' || p.type === 'busy') ringing.end(id, p.callId);
       // If I answer on one tab or device, stop ringing on my others.
       if (p.type === 'accept' || p.type === 'reject') {
         socket.to(`user:${id}`).emit('call:signal', { from: p.to, type: 'handled', callId: p.callId });
       }
-    });
+    }
+
+    // The caller hung up. If the other person never answered and is not looking at ChatX, their notification turns into "missed call".
+    function cancelRing(p) {
+      const ring = ringing.end(p.to, p.callId);
+      if (ring && !io.isVisible(p.to)) {
+        modelName(id).then((name) => sendPush(p.to, { t: 'cancel', from: id, name, callId: p.callId, video: ring.video }, { ttl: 3600, urgency: 'high' })).catch(() => {});
+      }
+    }
 
     socket.on('disconnect', () => {
       clearInterval(callRefill);

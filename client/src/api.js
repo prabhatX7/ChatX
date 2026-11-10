@@ -68,6 +68,10 @@ export const api = {
   leaveGroup: (id) => request(`/users/me/groups/${id}`, { method: 'DELETE' }),
   setTheme: (theme) => request('/users/me/theme', { method: 'PUT', json: { theme } }),
   iceServers: () => request('/calls/ice'),
+  pushKey: () => request('/push/key'),
+  pushSubscribe: (subscription) => request('/push/subscribe', { method: 'POST', json: { subscription } }),
+  pushUnsubscribe: (endpoint) => request('/push/unsubscribe', { method: 'POST', json: { endpoint } }),
+  pushTest: () => request('/push/test', { method: 'POST', json: {} }),
   pinChat: (peerId, pinned) => request(`/users/pins/${peerId}`, { method: 'PUT', json: { pinned } }),
 
   // Admin only (the server checks the role on every call).

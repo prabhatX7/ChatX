@@ -2675,3 +2675,10 @@ button {
     width: min(150px, 44vw);
   }
 }
+
+.push-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0;
+}

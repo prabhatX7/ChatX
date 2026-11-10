@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, getToken, setToken, onUnauthorized } from './api.js';
 import { loadKey, saveKey, clearKeys } from './keystore.js';
 import { sharedKeyFor, encryptJson, decryptJson, encryptBytes, clearSharedCache } from './crypto.js';
-import { connectSocket, disconnectSocket, sendActivity, sendSignal } from './socket.js';
+import { connectSocket, disconnectSocket, sendActivity, sendSignal, sendVisible, sendReady } from './socket.js';
+import { syncPush } from './push.js';
 import { CallManager } from './call.js';
 import { applyTheme, getSavedTheme } from './theme.js';
 import { pickGreeting } from './greetings.js';
-import { desktopNotify, ping } from './notify.js';
+import { desktopNotify, closeNotifications, ping } from './notify.js';
 import AuthScreen from './components/AuthScreen.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import ChatWindow from './components/ChatWindow.jsx';
@@ -20,6 +21,9 @@ import SettingsDialog from './components/SettingsDialog.jsx';
 import CallOverlay from './components/CallOverlay.jsx';
 import ContactPage, { takeGuestLink } from './components/ContactPage.jsx';
 import { previewOf } from './util.js';
+
+// Is ChatX in front of the person right now? If not, new messages and calls reach them as push notifications.
+const inFront = () => document.visibilityState === 'visible' && document.hasFocus();
 
 const byTime = (a, b) => new Date(a.createdAt) - new Date(b.createdAt);
 
@@ -209,9 +213,19 @@ export default function App() {
           setPinnedChats(pins || []);
         })
         .catch(() => {});
-    loadUsers();
+    // Once the people are loaded the server may hand over a call that was ringing while ChatX was closed.
+    let loaded = false;
+    const announceReady = () => loaded && sendReady();
+    loadUsers().finally(() => {
+      loaded = true;
+      announceReady();
+    });
 
     const socket = connectSocket(getToken());
+    socket.on('connect', () => {
+      sendVisible(inFront());
+      announceReady();
+    });
     socket.on('presence:list', (ids) => setOnline(new Set(ids)));
     socket.on('presence', ({ userId, online: isOnline }) =>
       setOnline((prev) => {
@@ -310,7 +324,7 @@ export default function App() {
       const name = usersRef.current.find((u) => u.id === call.peerId)?.name || 'Someone';
       const title = `${name} is calling`;
       const body = call.video ? 'Video call' : 'Audio call';
-      if (!document.hasFocus()) desktopNotify({ title, body, tag: `call-${call.callId}` });
+      if (!document.hasFocus()) desktopNotify({ title, body, tag: `call-${call.callId}`, kind: 'call', from: call.peerId });
       ping();
       ringTimer.current = setInterval(ping, 2200);
     }
@@ -336,6 +350,72 @@ export default function App() {
   useEffect(() => {
     if (!call) setCallMin(false);
   }, [call]);
+
+  // Keep this device registered for notifications (only if they were already allowed here), and tell the server
+  // whether ChatX is in front, so it knows when to send a pop-up instead.
+  useEffect(() => {
+    if (!session) return undefined;
+    syncPush();
+    const report = () => {
+      sendVisible(inFront());
+      if (inFront()) {
+        // You are here now: take down pop-ups for the chat you are looking at.
+        closeNotifications((tag) => tag === 'test' || tag === activeRef.current);
+      }
+    };
+    report();
+    window.addEventListener('focus', report);
+    window.addEventListener('blur', report);
+    document.addEventListener('visibilitychange', report);
+    return () => {
+      window.removeEventListener('focus', report);
+      window.removeEventListener('blur', report);
+      document.removeEventListener('visibilitychange', report);
+    };
+  }, [session?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A call that is answered, declined or over: take its pop-up down.
+  useEffect(() => {
+    if (!(call?.dir === 'in' && call.phase === 'ringing')) closeNotifications((tag) => tag.startsWith('call-'));
+  }, [call?.phase, call?.callId, call?.dir]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Tapping a notification opens the right chat. When ChatX was closed it starts with ?chat=<id>; when it was open
+  // the service worker sends a message instead.
+  const pendingOpen = useRef(null);
+  const applyOpen = () => {
+    const want = pendingOpen.current;
+    if (!want || !sessionRef.current) return;
+    if (want.kind === 'admin') {
+      if (sessionRef.current.user.role === 'admin') openAdmin();
+      pendingOpen.current = null;
+    } else if (want.kind === 'chat' && want.from) {
+      if (usersRef.current.some((u) => u.id === want.from)) {
+        openChat(want.from);
+        pendingOpen.current = null;
+      }
+    } else {
+      pendingOpen.current = null; // a call: the ring arrives by itself
+    }
+  };
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('chat')) pendingOpen.current = { kind: 'chat', from: q.get('chat') };
+    else if (q.get('admin')) pendingOpen.current = { kind: 'admin' };
+    if (q.has('chat') || q.has('admin')) window.history.replaceState(null, '', window.location.pathname);
+    const onMessage = (ev) => {
+      if (ev.data?.type === 'open') {
+        pendingOpen.current = { kind: ev.data.kind, from: ev.data.from };
+        applyOpen();
+      } else if (ev.data?.type === 'resubscribe') {
+        syncPush();
+      }
+    };
+    navigator.serviceWorker?.addEventListener('message', onMessage);
+    return () => navigator.serviceWorker?.removeEventListener('message', onMessage);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    applyOpen();
+  }, [users, session]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Leaving the page ends the call politely.
   useEffect(() => {
@@ -464,7 +544,7 @@ export default function App() {
     const body = `${p.name} is waiting for your approval`;
     setToasts((t) => [...t.slice(-3), { id: `signup-${p.id}`, peerId: null, title, body }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== `signup-${p.id}`)), 8000);
-    if (!document.hasFocus()) desktopNotify({ title, body, tag: 'signup', onClick: openAdmin });
+    if (!document.hasFocus()) desktopNotify({ title, body, tag: 'signup', kind: 'admin', onClick: openAdmin });
     ping();
   };
 
@@ -504,7 +584,7 @@ export default function App() {
       setTimeout(() => setToasts((t) => t.filter((x) => x.id !== m.id)), 6500);
     }
     if (!document.hasFocus()) {
-      desktopNotify({ title, body, tag: m.peerId, onClick: () => openChat(m.peerId) });
+      desktopNotify({ title, body, tag: m.peerId, kind: 'chat', from: m.peerId, onClick: () => openChat(m.peerId) });
     }
     ping();
   };
@@ -601,10 +681,10 @@ export default function App() {
 
   /* ---------- sending ---------- */
 
-  async function postMessage(peer, payload, fileId = null) {
+  async function postMessage(peer, payload, fileId = null, silent = false) {
     const key = await sharedKeyFor(session.privateKey, peer.id, peer.publicKey);
     const { iv, ct } = await encryptJson(key, payload, `${session.user.id}>${peer.id}`);
-    return decode(await api.send(peer.id, { iv, ct, fileId }));
+    return decode(await api.send(peer.id, { iv, ct, fileId, ...(silent ? { silent: true } : {}) }));
   }
 
   // Text shows up immediately with a "sending" clock, then settles to sent / delivered / seen.
@@ -701,7 +781,7 @@ export default function App() {
     if (!peer || peer.role === 'guest' || !sessionRef.current) return;
     const o = outcome === 'ended' ? 'ended' : outcome === 'declined' ? 'declined' : 'missed'; // busy / offline count as missed
     try {
-      addMessage(await postMessage(peer, { k: 'call', video: Boolean(video), o, t0: startedAt || 0, t1: endedAt || Date.now() }));
+      addMessage(await postMessage(peer, { k: 'call', video: Boolean(video), o, t0: startedAt || 0, t1: endedAt || Date.now() }, null, true)); // silent: the call itself already rang, no push for the entry
     } catch {
       /* the call itself is not affected if the entry cannot be saved */
     }
@@ -713,7 +793,7 @@ export default function App() {
     const body = `${p.name} wants to message you`;
     setToasts((t) => [...t.slice(-3), { id: `req-${p.id}`, peerId: null, title, body }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== `req-${p.id}`)), 8000);
-    if (!document.hasFocus()) desktopNotify({ title, body, tag: 'request', onClick: openAdmin });
+    if (!document.hasFocus()) desktopNotify({ title, body, tag: 'request', kind: 'admin', onClick: openAdmin });
     ping();
   };
 

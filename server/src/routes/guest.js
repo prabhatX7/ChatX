@@ -5,6 +5,7 @@ import RequestedUser from '../models/RequestedUser.js';
 import { normalizeTheme } from '../services/theme.js';
 import User from '../models/User.js';
 import { signToken, wrap } from '../middleware/auth.js';
+import { notifyAdmin } from '../services/push.js';
 import { checkRequestBody, checkIntro, isId, hashSecret, secretMatches, MAX_WAITING } from '../services/guest.js';
 
 const { ObjectId } = mongoose.Types;
@@ -99,6 +100,7 @@ export default function guestRouter(io) {
       };
       await RequestedUser.updateOne({ _id: id }, { $set: { introSent: true }, $push: { messages: msg } });
       io.to('admins').emit('request:new', { id, name: g.name });
+      notifyAdmin(io, { t: 'admin', what: 'request', name: g.name });
       res.status(201).json({ ok: true });
     })
   );

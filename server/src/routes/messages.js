@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import { requireAuth, wrap } from '../middleware/auth.js';
 import { markSeen, updateMessageEverywhere, updateEach } from '../services/receipts.js';
 import { mayChat } from '../services/pairs.js';
+import { sendPush } from '../services/push.js';
 
 const { ObjectId } = mongoose.Types;
 const OID = /^[a-f0-9]{24}$/;
@@ -111,7 +112,7 @@ export default function messagesRouter(io) {
     '/:peerId',
     wrap(async (req, res) => {
       const { peerId } = req.params;
-      const { iv, ct, fileId = null } = req.body || {};
+      const { iv, ct, fileId = null, silent = false } = req.body || {};
 
       if (!OID.test(peerId)) return res.status(400).json({ error: 'Bad id' });
       if (peerId === req.userId) return res.status(400).json({ error: 'You cannot message yourself' });
@@ -151,6 +152,16 @@ export default function messagesRouter(io) {
       const wire = toWire(base);
       io.to(`user:${req.userId}`).to(`user:${peerId}`).emit('message', wire);
       res.status(201).json(wire);
+
+      // Pop-up on the friend's phone / laptop when they are not looking at ChatX. It names the sender only: the server
+      // cannot read the message. (`silent` is used for call entries, which already rang.)
+      if (silent !== true && !io.isVisible(peerId)) {
+        modelForCaller(req)
+          .findById(req.userId, 'name')
+          .lean()
+          .then((me) => sendPush(peerId, { t: 'msg', from: req.userId, name: me?.name || 'Someone', att: Boolean(fileId) }, { ttl: 86400 }))
+          .catch(() => {});
+      }
     })
   );
 

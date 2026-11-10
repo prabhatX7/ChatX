@@ -25,3 +25,13 @@ export function sendSignal(signal) {
 export function sendActivity(to, kind, on) {
   if (socket?.connected) socket.emit('activity', { to, kind, on });
 }
+
+/** Tell the server whether ChatX is in front of you. When it is not, new messages and calls reach you as push notifications. */
+export function sendVisible(visible) {
+  if (socket?.connected) socket.emit('visible', visible === true);
+}
+
+/** The app has loaded: the server may now hand over a call that was ringing while it was closed. */
+export function sendReady() {
+  if (socket?.connected) socket.emit('ready');
+}

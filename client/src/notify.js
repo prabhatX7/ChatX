@@ -10,10 +10,33 @@ export function askPermission() {
   return Notification.requestPermission();
 }
 
-export function desktopNotify({ title, body, tag, onClick }) {
+/**
+ * A pop-up with text decrypted on this device. It goes through the service worker when there is one (the only way
+ * phones allow it), and the worker then knows not to replace it with a plain "sent you a message".
+ * kind: 'chat' (opens `from`'s chat), 'call' or 'admin'.
+ */
+export async function desktopNotify({ title, body, tag, kind = 'chat', from, onClick }) {
   if (!notificationsSupported() || Notification.permission !== 'granted') return;
+  const options = {
+    body,
+    tag,
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
+    renotify: true,
+    data: { src: 'page', at: Date.now(), kind, from },
+    ...(kind === 'call' ? { requireInteraction: true, vibrate: [300, 150, 300, 150, 300] } : {}),
+  };
   try {
-    const n = new Notification(title, { body, tag, icon: '/icon-192.png' });
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg?.active) {
+      await reg.showNotification(title, options);
+      return;
+    }
+  } catch {
+    /* fall back below */
+  }
+  try {
+    const n = new Notification(title, options);
     n.onclick = () => {
       window.focus();
       onClick?.();
@@ -21,6 +44,17 @@ export function desktopNotify({ title, body, tag, onClick }) {
     };
   } catch {
     /* some mobile browsers only allow notifications from a service worker */
+  }
+}
+
+/** Remove notifications that are no longer needed (a call that was answered, a chat you opened). */
+export async function closeNotifications(match) {
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (!reg) return;
+    (await reg.getNotifications()).filter((n) => match(n.tag || '')).forEach((n) => n.close());
+  } catch {
+    /* nothing to close */
   }
 }
 
