@@ -73,25 +73,33 @@ function subject() {
 
 /** Runs once at start-up. The key pair is made on the first start and kept in the database, so nothing needs setting up. */
 export async function initPush() {
+  // Whatever goes wrong here, the chat server must still start: push is an extra.
   try {
-    lib = (await import('web-push')).default;
-  } catch {
-    console.warn('Push notifications are off: run "npm install" in the server folder (package web-push is missing).');
-    return;
+    try {
+      lib = (await import('web-push')).default;
+    } catch {
+      console.warn('Push notifications are off: the web-push package is not installed (run "npm --prefix server install web-push").');
+      return;
+    }
+    const { default: ServerKey } = await import('../models/ServerKey.js');
+    let keys =
+      process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
+        ? { publicKey: process.env.VAPID_PUBLIC_KEY.trim(), privateKey: process.env.VAPID_PRIVATE_KEY.trim() }
+        : (await ServerKey.findById('vapid').lean())?.value;
+    if (!keys?.publicKey || !keys?.privateKey) {
+      keys = lib.generateVAPIDKeys();
+      await ServerKey.updateOne({ _id: 'vapid' }, { $setOnInsert: { value: keys } }, { upsert: true });
+      keys = (await ServerKey.findById('vapid').lean()).value; // if two servers started at once, both use the stored one
+      console.log('Push notifications: created a new key pair.');
+    }
+    lib.setVapidDetails(subject(), keys.publicKey, keys.privateKey);
+    publicKey = keys.publicKey;
+    sender = (sub, body, opts) => lib.sendNotification(sub, body, opts);
+    console.log('Push notifications: ready.');
+  } catch (err) {
+    sender = null;
+    console.error('Push notifications are off:', err.message);
   }
-  const { default: ServerKey } = await import('../models/ServerKey.js');
-  let keys = process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY
-    ? { publicKey: process.env.VAPID_PUBLIC_KEY.trim(), privateKey: process.env.VAPID_PRIVATE_KEY.trim() }
-    : (await ServerKey.findById('vapid').lean())?.value;
-  if (!keys?.publicKey || !keys?.privateKey) {
-    keys = lib.generateVAPIDKeys();
-    await ServerKey.updateOne({ _id: 'vapid' }, { $setOnInsert: { value: keys } }, { upsert: true });
-    keys = (await ServerKey.findById('vapid').lean()).value; // if two servers started at once, both use the stored one
-    console.log('Push notifications: created a new key pair.');
-  }
-  lib.setVapidDetails(subject(), keys.publicKey, keys.privateKey);
-  publicKey = keys.publicKey;
-  sender = (sub, body, opts) => lib.sendNotification(sub, body, opts);
 }
 
 /**
